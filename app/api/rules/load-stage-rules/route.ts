@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
+export const runtime = "nodejs";
+
+const API_VERSION = "1.0.3";
+
 type Stage =
   | "gpts_api_flow"
   | "material_status"
@@ -20,8 +24,63 @@ const ALLOWED_STAGES: Stage[] = [
   "image_generation_failsafe",
 ];
 
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 function isValidStage(stage: unknown): stage is Stage {
   return typeof stage === "string" && ALLOWED_STAGES.includes(stage as Stage);
+}
+
+function isValidUuid(value: unknown): value is string {
+  return typeof value === "string" && UUID_REGEX.test(value);
+}
+
+function blockResponse(params: {
+  error: string;
+  message: string;
+  nextAction: string;
+  mustCallNext: string;
+  requiredStage?: string;
+  status?: number;
+}) {
+  return NextResponse.json(
+    {
+      ok: false,
+      success: false,
+      blocked: true,
+      version: API_VERSION,
+      error: params.error,
+      message: params.message,
+      nextAction: params.nextAction,
+      mustCallNext: params.mustCallNext,
+      requiredStage: params.requiredStage ?? null,
+    },
+    { status: params.status ?? 409 }
+  );
+}
+
+function invalidSessionIdResponse(stage: Stage) {
+  return NextResponse.json(
+    {
+      ok: false,
+      success: false,
+      blocked: true,
+      version: API_VERSION,
+      error: "INVALID_SESSION_ID",
+      message: `Invalid sessionId format before loading ${stage} rules. sessionId must be a valid UUID.`,
+    },
+    { status: 400 }
+  );
+}
+
+function missingSessionIdResponse(stage: Stage) {
+  return blockResponse({
+    error: "MISSING_SESSION_ID",
+    message: `sessionId is required before loading ${stage} rules.`,
+    nextAction: "getSessionStatus",
+    mustCallNext: "getSessionStatus",
+    requiredStage: null,
+  });
 }
 
 function getRuleTitle(stage: Stage): string {
@@ -81,7 +140,6 @@ function getMustFollow(stage: Stage): string[] {
       "每次回覆前必須判斷目前 sessionId、current_stage、上一個 API 是否成功、下一個允許階段、是否需要使用者確認、是否可以生成圖片。",
       "若不確定 current_stage，必須先查詢 session 狀態，不得自行猜測。",
     ],
-
     material_status: [
       "只判斷素材狀態，不得儲存圖片本體。",
       "只可記錄 propertyPhotosCount、hasBusinessCard、hasPortrait、hasQrcode。",
@@ -89,7 +147,6 @@ function getMustFollow(stage: Stage): string[] {
       "完成素材狀態判斷後，才可呼叫 updateMaterialStatus。",
       "完成 updateMaterialStatus 後，不得直接進入 compliance_check、style_selection、final_image_prompt 或圖片生成。",
     ],
-
     property_confirmation: [
       "不得自行腦補價格、地址、格局、車位、坪數、屋齡、樓層、電話、證號、公司名稱。",
       "必須分成已確認資料與待補資料。",
@@ -100,7 +157,6 @@ function getMustFollow(stage: Stage): string[] {
       "使用者明確確認前，不得呼叫 confirmPropertyData。",
       "若使用者補充或修改資料，必須重新整理一次，再請使用者確認。",
     ],
-
     compliance_check: [
       "只有 confirmPropertyData 成功後，才可以進行合規檢查。",
       "檢查是否有誇大不實、保證獲利、絕對化用語。",
@@ -111,7 +167,6 @@ function getMustFollow(stage: Stage): string[] {
       "合規不通過時，不得產生 finalImagePrompt。",
       "合規通過後，才可呼叫 saveComplianceCheck。",
     ],
-
     style_selection: [
       "只有合規檢查通過後，才能進入風格選擇。",
       "使用者選定風格後，才可呼叫 selectImageStyle。",
@@ -122,7 +177,6 @@ function getMustFollow(stage: Stage): string[] {
       "禁止使用 POST /api/session/select-image-style。",
       "style-selection 成功後，只能進入 FINAL_IMAGE_PROMPT，不得直接生成圖片。",
     ],
-
     final_image_prompt: [
       "只能在使用者確認物件資料、savePropertyData 成功、confirmPropertyData 成功、合規通過、saveComplianceCheck 成功、selectImageStyle 成功後產生。",
       "finalImagePrompt 只能使用已確認資料。",
@@ -138,7 +192,6 @@ function getMustFollow(stage: Stage): string[] {
       "完成 finalImagePrompt 後，才可呼叫 saveImagePackage。",
       "saveImagePackage 只能儲存文字包，不得儲存圖片。",
     ],
-
     image_generation_failsafe: [
       "圖片生成必須是 FB 4:5 直式版面。",
       "只能使用已確認資料，不得新增未確認資訊。",
@@ -177,33 +230,60 @@ function getNextInstruction(stage: Stage): string {
   return instructions[stage];
 }
 
-async function guardComplianceCheck(sessionId: unknown) {
-  if (typeof sessionId !== "string" || !sessionId) {
-    return NextResponse.json(
-      {
-        ok: false,
-        success: false,
-        error: "MISSING_SESSION_ID",
-        message:
-          "sessionId is required before loading compliance_check rules. You must call confirmPropertyData first, then load compliance_check with sessionId.",
-        nextAction: "confirmPropertyData",
-        mustCallNext: "confirmPropertyData",
-      },
-      { status: 409 }
-    );
-  }
+async function getSession(sessionId: string) {
+  const { data, error } = await supabaseAdmin
+    .from("sessions")
+    .select("id, current_stage, status, completed_at")
+    .eq("id", sessionId)
+    .maybeSingle();
 
-  const { data: propertyData, error } = await supabaseAdmin
+  return { data, error };
+}
+
+async function getPropertyData(sessionId: string) {
+  const { data, error } = await supabaseAdmin
     .from("session_property_data")
     .select("id, confirmed, confirmed_at")
     .eq("session_id", sessionId)
     .maybeSingle();
+
+  return { data, error };
+}
+
+async function getComplianceResult(sessionId: string) {
+  const { data, error } = await supabaseAdmin
+    .from("session_copy_results")
+    .select("id, compliance_passed")
+    .eq("session_id", sessionId)
+    .maybeSingle();
+
+  return { data, error };
+}
+
+async function getImagePackage(sessionId: string) {
+  const { data, error } = await supabaseAdmin
+    .from("session_image_packages")
+    .select(
+      "id, selected_style, final_image_prompt, qrcode_policy, portrait_policy, failsafe_policy, generated_at"
+    )
+    .eq("session_id", sessionId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  return { data, error };
+}
+
+async function guardPropertyConfirmed(sessionId: string, targetStage: Stage) {
+  const { data: propertyData, error } = await getPropertyData(sessionId);
 
   if (error) {
     return NextResponse.json(
       {
         ok: false,
         success: false,
+        blocked: true,
+        version: API_VERSION,
         error: "FAILED_TO_CHECK_PROPERTY_CONFIRMATION",
         message: error.message,
       },
@@ -212,38 +292,252 @@ async function guardComplianceCheck(sessionId: unknown) {
   }
 
   if (!propertyData) {
-    return NextResponse.json(
-      {
-        ok: false,
-        success: false,
-        error: "PROPERTY_DATA_NOT_FOUND",
-        message:
-          "Property data is missing. You must complete savePropertyData and confirmPropertyData before loading compliance_check rules.",
-        nextAction: "savePropertyData",
-        mustCallNext: "savePropertyData",
-      },
-      { status: 409 }
-    );
+    return blockResponse({
+      error: "PROPERTY_DATA_NOT_FOUND",
+      message: `Property data is missing. You must call savePropertyData before loading ${targetStage} rules.`,
+      nextAction: "savePropertyData",
+      mustCallNext: "savePropertyData",
+      requiredStage: "PROPERTY_CONFIRMATION",
+    });
   }
 
   if (propertyData.confirmed !== true) {
+    return blockResponse({
+      error: "PROPERTY_DATA_NOT_CONFIRMED",
+      message: `Property data is not confirmed. You must call confirmPropertyData before loading ${targetStage} rules.`,
+      nextAction: "confirmPropertyData",
+      mustCallNext: "confirmPropertyData",
+      requiredStage: "USER_CONFIRMATION",
+    });
+  }
+
+  return null;
+}
+
+async function guardComplianceCheck(sessionId: unknown) {
+  const stage: Stage = "compliance_check";
+
+  if (typeof sessionId !== "string" || !sessionId) {
+    return blockResponse({
+      error: "MISSING_SESSION_ID",
+      message:
+        "sessionId is required before loading compliance_check rules. You must call confirmPropertyData first, then load compliance_check with sessionId.",
+      nextAction: "confirmPropertyData",
+      mustCallNext: "confirmPropertyData",
+      requiredStage: "USER_CONFIRMATION",
+    });
+  }
+
+  if (!isValidUuid(sessionId)) {
+    return invalidSessionIdResponse(stage);
+  }
+
+  return await guardPropertyConfirmed(sessionId, stage);
+}
+
+async function guardStyleSelection(sessionId: unknown) {
+  const stage: Stage = "style_selection";
+
+  if (typeof sessionId !== "string" || !sessionId) {
+    return missingSessionIdResponse(stage);
+  }
+
+  if (!isValidUuid(sessionId)) {
+    return invalidSessionIdResponse(stage);
+  }
+
+  const propertyGuard = await guardPropertyConfirmed(sessionId, stage);
+
+  if (propertyGuard) {
+    return propertyGuard;
+  }
+
+  const { data: complianceResult, error } = await getComplianceResult(sessionId);
+
+  if (error) {
     return NextResponse.json(
       {
         ok: false,
         success: false,
-        error: "PROPERTY_DATA_NOT_CONFIRMED",
-        message:
-          "Property data is not confirmed. You must call confirmPropertyData before loading compliance_check rules.",
-        nextAction: "confirmPropertyData",
-        mustCallNext: "confirmPropertyData",
-        propertyData: {
-          id: propertyData.id,
-          confirmed: propertyData.confirmed,
-          confirmedAt: propertyData.confirmed_at,
-        },
+        blocked: true,
+        version: API_VERSION,
+        error: "FAILED_TO_CHECK_COMPLIANCE_RESULT",
+        message: error.message,
       },
-      { status: 409 }
+      { status: 500 }
     );
+  }
+
+  if (!complianceResult) {
+    return blockResponse({
+      error: "COMPLIANCE_RESULT_NOT_FOUND",
+      message:
+        "Compliance result is missing. You must call saveComplianceCheck before loading style_selection rules.",
+      nextAction: "saveComplianceCheck",
+      mustCallNext: "saveComplianceCheck",
+      requiredStage: "COMPLIANCE_CHECK",
+    });
+  }
+
+  if (complianceResult.compliance_passed !== true) {
+    return blockResponse({
+      error: "COMPLIANCE_CHECK_NOT_PASSED",
+      message:
+        "Compliance check has not passed. You cannot load style_selection rules before compliancePassed is true.",
+      nextAction: "saveComplianceCheck",
+      mustCallNext: "saveComplianceCheck",
+      requiredStage: "COMPLIANCE_CHECK",
+    });
+  }
+
+  return null;
+}
+
+async function guardFinalImagePrompt(sessionId: unknown) {
+  const stage: Stage = "final_image_prompt";
+
+  if (typeof sessionId !== "string" || !sessionId) {
+    return missingSessionIdResponse(stage);
+  }
+
+  if (!isValidUuid(sessionId)) {
+    return invalidSessionIdResponse(stage);
+  }
+
+  const styleGuard = await guardStyleSelection(sessionId);
+
+  if (styleGuard) {
+    return styleGuard;
+  }
+
+  const { data: imagePackage, error } = await getImagePackage(sessionId);
+
+  if (error) {
+    return NextResponse.json(
+      {
+        ok: false,
+        success: false,
+        blocked: true,
+        version: API_VERSION,
+        error: "FAILED_TO_CHECK_STYLE_SELECTION",
+        message: error.message,
+      },
+      { status: 500 }
+    );
+  }
+
+  if (!imagePackage || !imagePackage.selected_style) {
+    return blockResponse({
+      error: "STYLE_SELECTION_NOT_FOUND",
+      message:
+        "Style selection is missing. You must call selectImageStyle before loading final_image_prompt rules.",
+      nextAction: "selectImageStyle",
+      mustCallNext: "selectImageStyle",
+      requiredStage: "STYLE_SELECTION",
+    });
+  }
+
+  return null;
+}
+
+async function guardImageGenerationFailsafe(sessionId: unknown) {
+  const stage: Stage = "image_generation_failsafe";
+
+  if (typeof sessionId !== "string" || !sessionId) {
+    return missingSessionIdResponse(stage);
+  }
+
+  if (!isValidUuid(sessionId)) {
+    return invalidSessionIdResponse(stage);
+  }
+
+  const finalPromptGuard = await guardFinalImagePrompt(sessionId);
+
+  if (finalPromptGuard) {
+    return finalPromptGuard;
+  }
+
+  const { data: session, error: sessionError } = await getSession(sessionId);
+
+  if (sessionError) {
+    return NextResponse.json(
+      {
+        ok: false,
+        success: false,
+        blocked: true,
+        version: API_VERSION,
+        error: "FAILED_TO_CHECK_SESSION",
+        message: sessionError.message,
+      },
+      { status: 500 }
+    );
+  }
+
+  if (!session) {
+    return blockResponse({
+      error: "SESSION_NOT_FOUND",
+      message: "Session not found. You must startSession before continuing.",
+      nextAction: "startSession",
+      mustCallNext: "startSession",
+      requiredStage: "STORE_VERIFY",
+    });
+  }
+
+  const { data: imagePackage, error } = await getImagePackage(sessionId);
+
+  if (error) {
+    return NextResponse.json(
+      {
+        ok: false,
+        success: false,
+        blocked: true,
+        version: API_VERSION,
+        error: "FAILED_TO_CHECK_IMAGE_PACKAGE",
+        message: error.message,
+      },
+      { status: 500 }
+    );
+  }
+
+  if (!imagePackage || !imagePackage.final_image_prompt) {
+    return blockResponse({
+      error: "IMAGE_PACKAGE_NOT_FOUND",
+      message:
+        "Image package is missing. You must call saveImagePackage before loading image_generation_failsafe rules.",
+      nextAction: "saveImagePackage",
+      mustCallNext: "saveImagePackage",
+      requiredStage: "FINAL_IMAGE_PROMPT",
+    });
+  }
+
+  if (session.current_stage !== "IMAGE_GENERATION_READY") {
+    return blockResponse({
+      error: "SESSION_NOT_READY_FOR_IMAGE_GENERATION",
+      message: `Current stage is ${session.current_stage}. You must complete saveImagePackage before loading image_generation_failsafe rules.`,
+      nextAction: "saveImagePackage",
+      mustCallNext: "saveImagePackage",
+      requiredStage: "FINAL_IMAGE_PROMPT",
+    });
+  }
+
+  return null;
+}
+
+async function guardStage(stage: Stage, sessionId: unknown) {
+  if (stage === "compliance_check") {
+    return await guardComplianceCheck(sessionId);
+  }
+
+  if (stage === "style_selection") {
+    return await guardStyleSelection(sessionId);
+  }
+
+  if (stage === "final_image_prompt") {
+    return await guardFinalImagePrompt(sessionId);
+  }
+
+  if (stage === "image_generation_failsafe") {
+    return await guardImageGenerationFailsafe(sessionId);
   }
 
   return null;
@@ -260,6 +554,7 @@ export async function POST(request: Request) {
         {
           ok: false,
           success: false,
+          version: API_VERSION,
           error: "Missing required field: stage",
           allowedStages: ALLOWED_STAGES,
         },
@@ -272,6 +567,7 @@ export async function POST(request: Request) {
         {
           ok: false,
           success: false,
+          version: API_VERSION,
           error: `Invalid stage: ${String(stage)}`,
           allowedStages: ALLOWED_STAGES,
         },
@@ -279,30 +575,31 @@ export async function POST(request: Request) {
       );
     }
 
-    if (stage === "compliance_check") {
-      const guardResponse = await guardComplianceCheck(sessionId);
+    const guardResponse = await guardStage(stage, sessionId);
 
-      if (guardResponse) {
-        return guardResponse;
-      }
+    if (guardResponse) {
+      return guardResponse;
     }
 
     return NextResponse.json({
       ok: true,
       success: true,
       stage,
+      sessionId: typeof sessionId === "string" ? sessionId : null,
       ruleTitle: getRuleTitle(stage),
       ruleSummary: getRuleSummary(stage),
       mustFollow: getMustFollow(stage),
       nextInstruction: getNextInstruction(stage),
-      version: "1.0.3",
+      version: API_VERSION,
     });
-  } catch {
+  } catch (error) {
     return NextResponse.json(
       {
         ok: false,
         success: false,
+        version: API_VERSION,
         error: "Invalid request body",
+        detail: error instanceof Error ? error.message : String(error),
         allowedStages: ALLOWED_STAGES,
       },
       { status: 400 }
