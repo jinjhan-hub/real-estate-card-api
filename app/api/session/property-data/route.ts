@@ -164,13 +164,13 @@ export async function POST(request: Request) {
     }
 
     // 6. 寫入 session_logs
-   const { error: logError } = await supabaseAdmin
-  .from("session_logs")
-  .insert({
-    session_id: sessionId,
-    event_type: "PROPERTY_DATA_SAVED",
-    message: `Property data saved and session moved to USER_CONFIRMATION. propertyDataId=${savedPropertyData.id}`,
-  });
+    const { error: logError } = await supabaseAdmin
+      .from("session_logs")
+      .insert({
+        session_id: sessionId,
+        event_type: "PROPERTY_DATA_SAVED",
+        message: `Property data saved and session moved to USER_CONFIRMATION. propertyDataId=${savedPropertyData.id}. Next action must be confirmPropertyData.`,
+      });
 
     if (logError) {
       return NextResponse.json(
@@ -186,6 +186,10 @@ export async function POST(request: Request) {
     return NextResponse.json({
       ok: true,
       nextStage: "USER_CONFIRMATION",
+      nextAction: "confirmPropertyData",
+      mustCallNext: "confirmPropertyData",
+      message:
+        "Property data saved. The next action must be confirmPropertyData before loading compliance_check rules.",
       propertyData: savedPropertyData,
     });
   } catch (error) {
