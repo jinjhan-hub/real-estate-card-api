@@ -1,6 +1,13 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
+export const runtime = "nodejs";
+
+const API_VERSION = "1.0.3";
+
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 type PropertyData = {
   title?: string;
   price?: string;
@@ -15,6 +22,10 @@ type PropertyData = {
   missingFields?: string[];
 };
 
+function isValidUuid(value: unknown): value is string {
+  return typeof value === "string" && UUID_REGEX.test(value);
+}
+
 export async function POST(request: Request) {
   try {
     const body = await request.json();
@@ -26,7 +37,22 @@ export async function POST(request: Request) {
       return NextResponse.json(
         {
           ok: false,
+          success: false,
+          version: API_VERSION,
           error: "Missing sessionId",
+        },
+        { status: 400 }
+      );
+    }
+
+    if (!isValidUuid(sessionId)) {
+      return NextResponse.json(
+        {
+          ok: false,
+          success: false,
+          version: API_VERSION,
+          error: "INVALID_SESSION_ID",
+          message: "sessionId must be a valid UUID.",
         },
         { status: 400 }
       );
@@ -36,13 +62,14 @@ export async function POST(request: Request) {
       return NextResponse.json(
         {
           ok: false,
+          success: false,
+          version: API_VERSION,
           error: "Missing propertyData",
         },
         { status: 400 }
       );
     }
 
-    // 1. 確認 session 存在
     const { data: session, error: sessionError } = await supabaseAdmin
       .from("sessions")
       .select("id, current_stage")
@@ -53,6 +80,8 @@ export async function POST(request: Request) {
       return NextResponse.json(
         {
           ok: false,
+          success: false,
+          version: API_VERSION,
           error: "Session not found",
           detail: sessionError?.message,
         },
@@ -60,7 +89,8 @@ export async function POST(request: Request) {
       );
     }
 
-    // 2. 整理要寫入 session_property_data 的欄位
+    const now = new Date().toISOString();
+
     const propertyPayload = {
       session_id: sessionId,
       title: propertyData.title ?? null,
@@ -71,15 +101,21 @@ export async function POST(request: Request) {
       layout: propertyData.layout ?? null,
       age: propertyData.age ?? null,
       parking: propertyData.parking ?? null,
-      highlights: propertyData.highlights ?? [],
-      contact_data: propertyData.contactData ?? {},
-      missing_fields: propertyData.missingFields ?? [],
+      highlights: Array.isArray(propertyData.highlights)
+        ? propertyData.highlights
+        : [],
+      contact_data:
+        propertyData.contactData && typeof propertyData.contactData === "object"
+          ? propertyData.contactData
+          : {},
+      missing_fields: Array.isArray(propertyData.missingFields)
+        ? propertyData.missingFields
+        : [],
       confirmed: false,
       confirmed_at: null,
-      updated_at: new Date().toISOString(),
+      updated_at: now,
     };
 
-    // 3. 先檢查這個 session 是否已經有 property data
     const { data: existingPropertyData, error: existingError } =
       await supabaseAdmin
         .from("session_property_data")
@@ -91,6 +127,8 @@ export async function POST(request: Request) {
       return NextResponse.json(
         {
           ok: false,
+          success: false,
+          version: API_VERSION,
           error: "Failed to check existing property data",
           detail: existingError.message,
         },
@@ -101,7 +139,6 @@ export async function POST(request: Request) {
     let savedPropertyData;
 
     if (existingPropertyData?.id) {
-      // 4A. 已存在 → update
       const { data, error } = await supabaseAdmin
         .from("session_property_data")
         .update(propertyPayload)
@@ -113,6 +150,8 @@ export async function POST(request: Request) {
         return NextResponse.json(
           {
             ok: false,
+            success: false,
+            version: API_VERSION,
             error: "Failed to update property data",
             detail: error.message,
           },
@@ -122,7 +161,6 @@ export async function POST(request: Request) {
 
       savedPropertyData = data;
     } else {
-      // 4B. 不存在 → insert
       const { data, error } = await supabaseAdmin
         .from("session_property_data")
         .insert(propertyPayload)
@@ -133,6 +171,8 @@ export async function POST(request: Request) {
         return NextResponse.json(
           {
             ok: false,
+            success: false,
+            version: API_VERSION,
             error: "Failed to insert property data",
             detail: error.message,
           },
@@ -143,12 +183,11 @@ export async function POST(request: Request) {
       savedPropertyData = data;
     }
 
-    // 5. 更新 sessions.current_stage
     const { error: updateSessionError } = await supabaseAdmin
       .from("sessions")
       .update({
         current_stage: "USER_CONFIRMATION",
-        updated_at: new Date().toISOString(),
+        updated_at: now,
       })
       .eq("id", sessionId);
 
@@ -156,6 +195,8 @@ export async function POST(request: Request) {
       return NextResponse.json(
         {
           ok: false,
+          success: false,
+          version: API_VERSION,
           error: "Failed to update session stage",
           detail: updateSessionError.message,
         },
@@ -163,19 +204,26 @@ export async function POST(request: Request) {
       );
     }
 
-    // 6. 寫入 session_logs
-    const { error: logError } = await supabaseAdmin
-      .from("session_logs")
-      .insert({
-        session_id: sessionId,
-        event_type: "PROPERTY_DATA_SAVED",
-        message: `Property data saved and session moved to USER_CONFIRMATION. propertyDataId=${savedPropertyData.id}. Next action must be confirmPropertyData.`,
-      });
+    const { error: logError } = await supabaseAdmin.from("session_logs").insert({
+      session_id: sessionId,
+      stage: "USER_CONFIRMATION",
+      event_type: "PROPERTY_DATA_SAVED",
+      message:
+        "Property data saved and session moved to USER_CONFIRMATION. Next action must be confirmPropertyData.",
+      metadata: {
+        propertyDataId: savedPropertyData.id,
+        previousStage: session.current_stage,
+        nextStage: "USER_CONFIRMATION",
+        nextAction: "confirmPropertyData",
+      },
+    });
 
     if (logError) {
       return NextResponse.json(
         {
           ok: false,
+          success: false,
+          version: API_VERSION,
           error: "Property data saved, but failed to write session log",
           detail: logError.message,
         },
@@ -185,6 +233,8 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       ok: true,
+      success: true,
+      version: API_VERSION,
       nextStage: "USER_CONFIRMATION",
       nextAction: "confirmPropertyData",
       mustCallNext: "confirmPropertyData",
@@ -196,6 +246,8 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         ok: false,
+        success: false,
+        version: API_VERSION,
         error: "Unexpected error",
         detail: error instanceof Error ? error.message : String(error),
       },
