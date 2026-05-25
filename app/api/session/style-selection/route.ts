@@ -6,6 +6,12 @@ type StyleSelectionBody = {
   selectedStyle?: string;
 };
 
+const ALLOWED_STYLES = [
+  "modern_clean",
+  "luxury_premium",
+  "warm_lifestyle",
+] as const;
+
 export async function POST(request: Request) {
   try {
     const body: StyleSelectionBody = await request.json();
@@ -23,6 +29,17 @@ export async function POST(request: Request) {
     if (!selectedStyle || typeof selectedStyle !== "string") {
       return NextResponse.json(
         { ok: false, error: "Missing selectedStyle" },
+        { status: 400 }
+      );
+    }
+
+    if (!ALLOWED_STYLES.includes(selectedStyle as any)) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "Invalid selectedStyle",
+          allowedStyles: ALLOWED_STYLES,
+        },
         { status: 400 }
       );
     }
@@ -67,7 +84,8 @@ export async function POST(request: Request) {
       return NextResponse.json(
         {
           ok: false,
-          error: "Compliance result not found. Please run compliance check first.",
+          error:
+            "Compliance result not found. Please run compliance check first.",
         },
         { status: 404 }
       );
@@ -77,14 +95,17 @@ export async function POST(request: Request) {
       return NextResponse.json(
         {
           ok: false,
-          error: "Compliance check has not passed. Cannot proceed to image generation.",
+          error:
+            "Compliance check has not passed. Cannot proceed to final image prompt.",
         },
         { status: 409 }
       );
     }
 
     const now = new Date().toISOString();
-    const nextStage = "IMAGE_GENERATION_READY";
+
+    // 選完風格後，下一階段應先進 finalImagePrompt，不得直接進圖片生成
+    const nextStage = "FINAL_IMAGE_PROMPT";
 
     const imagePackagePayload = {
       session_id: sessionId,
@@ -136,7 +157,10 @@ export async function POST(request: Request) {
     } else {
       const { data, error } = await supabaseAdmin
         .from("session_image_packages")
-        .insert(imagePackagePayload)
+        .insert({
+          ...imagePackagePayload,
+          created_at: now,
+        })
         .select()
         .single();
 
@@ -175,20 +199,18 @@ export async function POST(request: Request) {
     }
 
     // 5. 寫入 session_logs
-    const { error: logError } = await supabaseAdmin
-      .from("session_logs")
-      .insert({
-        session_id: sessionId,
-        stage: nextStage,
-        event_type: "STYLE_SELECTED",
-        message: `Style selected. selectedStyle=${selectedStyle}, nextStage=${nextStage}`,
-        metadata: {
-          imagePackageId: savedImagePackage.id,
-          previousStage: session.current_stage,
-          nextStage,
-          selectedStyle,
-        },
-      });
+    const { error: logError } = await supabaseAdmin.from("session_logs").insert({
+      session_id: sessionId,
+      stage: nextStage,
+      event_type: "STYLE_SELECTED",
+      message: `Style selected. selectedStyle=${selectedStyle}, nextStage=${nextStage}`,
+      metadata: {
+        imagePackageId: savedImagePackage.id,
+        previousStage: session.current_stage,
+        nextStage,
+        selectedStyle,
+      },
+    });
 
     if (logError) {
       return NextResponse.json(
