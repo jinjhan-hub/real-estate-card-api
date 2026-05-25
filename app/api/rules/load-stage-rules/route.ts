@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 type Stage =
+  | "gpts_api_flow"
   | "material_status"
   | "property_confirmation"
   | "compliance_check"
@@ -9,6 +10,7 @@ type Stage =
   | "image_generation_failsafe";
 
 const ALLOWED_STAGES: Stage[] = [
+  "gpts_api_flow",
   "material_status",
   "property_confirmation",
   "compliance_check",
@@ -23,6 +25,7 @@ function isValidStage(stage: unknown): stage is Stage {
 
 function getRuleTitle(stage: Stage): string {
   const titles: Record<Stage, string> = {
+    gpts_api_flow: "GPTs API 流程主控規則",
     material_status: "素材狀態判斷規則",
     property_confirmation: "物件資料整理與確認規則",
     compliance_check: "合規檢查規則",
@@ -36,6 +39,8 @@ function getRuleTitle(stage: Stage): string {
 
 function getRuleSummary(stage: Stage): string {
   const summaries: Record<Stage, string> = {
+    gpts_api_flow:
+      "規範 GPTs 串接 real-estate-card-api 的完整 session 流程，避免跳步、重跑 API、提前生成圖片或跳過 finalImagePrompt / IMAGE_GENERATION_READY。",
     material_status:
       "判斷使用者提供了哪些素材，只記錄文字狀態，不儲存圖片、PDF、QR Code、人物照、房屋照片或名片圖片本體。",
     property_confirmation:
@@ -55,11 +60,33 @@ function getRuleSummary(stage: Stage): string {
 
 function getMustFollow(stage: Stage): string[] {
   const rules: Record<Stage, string[]> = {
+    gpts_api_flow: [
+      "GPTs 必須依照 session stage 順序執行：STORE_VERIFY → STORE_DATA_LOADED → MATERIAL_UPLOAD_GUIDE → DATA_EXTRACTION → USER_CONFIRMATION → COMPLIANCE_CHECK → STYLE_SELECTION → FINAL_IMAGE_PROMPT → IMAGE_GENERATION_READY → COMPLETED。",
+      "圖片只能在 current_stage = IMAGE_GENERATION_READY 後生成。",
+      "圖片生成成功後，才可以呼叫 POST /api/session/complete-generation。",
+      "使用者未明確確認物件資料前，不得呼叫 savePropertyData、confirmPropertyData、saveComplianceCheck、style-selection、image-package 或 complete-generation。",
+      "DATA_EXTRACTION 階段只整理資料，不得生成圖片。",
+      "COMPLIANCE_CHECK 未通過時，不得進入 STYLE_SELECTION。",
+      "STYLE_SELECTION 成功後，只能進入 FINAL_IMAGE_PROMPT，不得直接生成圖片。",
+      "FINAL_IMAGE_PROMPT 階段必須產出 finalImagePrompt、qrcodePolicy、portraitPolicy、failsafePolicy。",
+      "POST /api/session/image-package 只能在 FINAL_IMAGE_PROMPT 完成後呼叫。",
+      "image-package 階段不得寫入 generated_at、completed_at，也不得把 session 直接改成 COMPLETED。",
+      "完成 image-package 後，只能推進到 IMAGE_GENERATION_READY。",
+      "圖片尚未生成成功前，不得呼叫 complete-generation。",
+      "若 session 已在較後階段，不得重跑前面 API，除非使用者明確修改相關資料。",
+      "若使用者修改價格、地址、坪數、格局、屋齡、主標、副標或賣點，必須退回 USER_CONFIRMATION 並重新跑合規檢查。",
+      "若只修改風格，可從 STYLE_SELECTION 重新進入 FINAL_IMAGE_PROMPT。",
+      "若只修改版面，例如 QR Code 位置、人物位置、主標位置，可從 FINAL_IMAGE_PROMPT 重新整理 image-package。",
+      "每次回覆前必須判斷目前 sessionId、current_stage、上一個 API 是否成功、下一個允許階段、是否需要使用者確認、是否可以生成圖片。",
+      "若不確定 current_stage，必須先查詢 session 狀態，不得自行猜測。",
+    ],
+
     material_status: [
       "只判斷素材狀態，不得儲存圖片本體。",
       "只可記錄 propertyPhotosCount、hasBusinessCard、hasPortrait、hasQrcode。",
       "不得把圖片、PDF、QR Code、人物照、房屋照片、名片圖片傳入後端。",
       "完成素材狀態判斷後，才可呼叫 updateMaterialStatus。",
+      "完成 updateMaterialStatus 後，不得直接進入 compliance_check、style_selection、final_image_prompt 或圖片生成。",
     ],
 
     property_confirmation: [
@@ -90,11 +117,15 @@ function getMustFollow(stage: Stage): string[] {
       "selectedStyle 必須使用 OpenAPI 允許的英文代碼。",
       "目前允許的 selectedStyle 為 modern_clean、luxury_premium、warm_lifestyle。",
       "不得把中文風格名稱直接送入 selectedStyle。",
+      "正確 API 是 POST /api/session/style-selection。",
+      "禁止使用 POST /api/session/select-image-style。",
+      "style-selection 成功後，只能進入 FINAL_IMAGE_PROMPT，不得直接生成圖片。",
     ],
 
     final_image_prompt: [
       "只能在使用者確認物件資料、savePropertyData 成功、confirmPropertyData 成功、合規通過、saveComplianceCheck 成功、selectImageStyle 成功後產生。",
       "finalImagePrompt 只能使用已確認資料。",
+      "必須同時整理 finalImagePrompt、qrcodePolicy、portraitPolicy、failsafePolicy。",
       "未確認價格不得放價格。",
       "未確認地址不得顯示完整地址。",
       "不得加入未確認的格局、車位、坪數、電話、證號或公司資訊。",
@@ -117,6 +148,7 @@ function getMustFollow(stage: Stage): string[] {
       "不得產生不存在的建物、室內照、外觀照或街景。",
       "不得遮擋房屋照片、揭露資訊或聯絡資訊。",
       "若生成結果有人物變形、QR Code 不可掃描、文字錯誤、價格錯誤、地址錯誤、虛構房屋或揭露資訊缺漏，必須提醒使用者重新生成或修正。",
+      "圖片成功生成後，才可以呼叫 POST /api/session/complete-generation。",
     ],
   };
 
@@ -125,6 +157,8 @@ function getMustFollow(stage: Stage): string[] {
 
 function getNextInstruction(stage: Stage): string {
   const instructions: Record<Stage, string> = {
+    gpts_api_flow:
+      "請依照 mustFollow 判斷目前 session stage，嚴格依序推進 API；不得跳過 USER_CONFIRMATION、COMPLIANCE_CHECK、FINAL_IMAGE_PROMPT 或 IMAGE_GENERATION_READY。",
     material_status:
       "請依照 mustFollow 判斷素材狀態，完成後呼叫 updateMaterialStatus。",
     property_confirmation:
@@ -134,9 +168,9 @@ function getNextInstruction(stage: Stage): string {
     style_selection:
       "請依照 mustFollow 提供可用風格選項；使用者選定後，將中文選項轉成允許的英文 selectedStyle 再呼叫 selectImageStyle。",
     final_image_prompt:
-      "請依照 mustFollow 產生純文字 finalImagePrompt，完成後呼叫 saveImagePackage。",
+      "請依照 mustFollow 產生純文字 finalImagePrompt、qrcodePolicy、portraitPolicy、failsafePolicy，完成後呼叫 saveImagePackage。",
     image_generation_failsafe:
-      "請依照 mustFollow 進行圖片生成前最後檢查，通過後才進入圖片生成。",
+      "請依照 mustFollow 進行圖片生成前最後檢查，通過且 current_stage = IMAGE_GENERATION_READY 後才進入圖片生成。",
   };
 
   return instructions[stage];
@@ -171,17 +205,19 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       ok: true,
+      success: true,
       stage,
       ruleTitle: getRuleTitle(stage),
       ruleSummary: getRuleSummary(stage),
       mustFollow: getMustFollow(stage),
       nextInstruction: getNextInstruction(stage),
-      version: "1.0.1",
+      version: "1.0.2",
     });
   } catch {
     return NextResponse.json(
       {
         ok: false,
+        success: false,
         error: "Invalid request body",
         allowedStages: ALLOWED_STAGES,
       },
