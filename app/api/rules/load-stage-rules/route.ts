@@ -34,13 +34,12 @@ function isValidStage(stage: unknown): stage is Stage {
 function isValidUuid(value: unknown): value is string {
   return typeof value === "string" && UUID_REGEX.test(value);
 }
-
 function blockResponse(params: {
   error: string;
   message: string;
   nextAction: string;
   mustCallNext: string;
-  requiredStage?: string;
+  requiredStage?: string | null;
   status?: number;
 }) {
   return NextResponse.json(
