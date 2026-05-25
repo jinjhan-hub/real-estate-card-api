@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
 type Stage =
   | "gpts_api_flow"
@@ -176,15 +177,89 @@ function getNextInstruction(stage: Stage): string {
   return instructions[stage];
 }
 
+async function guardComplianceCheck(sessionId: unknown) {
+  if (typeof sessionId !== "string" || !sessionId) {
+    return NextResponse.json(
+      {
+        ok: false,
+        success: false,
+        error: "MISSING_SESSION_ID",
+        message:
+          "sessionId is required before loading compliance_check rules. You must call confirmPropertyData first, then load compliance_check with sessionId.",
+        nextAction: "confirmPropertyData",
+        mustCallNext: "confirmPropertyData",
+      },
+      { status: 409 }
+    );
+  }
+
+  const { data: propertyData, error } = await supabaseAdmin
+    .from("session_property_data")
+    .select("id, confirmed, confirmed_at")
+    .eq("session_id", sessionId)
+    .maybeSingle();
+
+  if (error) {
+    return NextResponse.json(
+      {
+        ok: false,
+        success: false,
+        error: "FAILED_TO_CHECK_PROPERTY_CONFIRMATION",
+        message: error.message,
+      },
+      { status: 500 }
+    );
+  }
+
+  if (!propertyData) {
+    return NextResponse.json(
+      {
+        ok: false,
+        success: false,
+        error: "PROPERTY_DATA_NOT_FOUND",
+        message:
+          "Property data is missing. You must complete savePropertyData and confirmPropertyData before loading compliance_check rules.",
+        nextAction: "savePropertyData",
+        mustCallNext: "savePropertyData",
+      },
+      { status: 409 }
+    );
+  }
+
+  if (propertyData.confirmed !== true) {
+    return NextResponse.json(
+      {
+        ok: false,
+        success: false,
+        error: "PROPERTY_DATA_NOT_CONFIRMED",
+        message:
+          "Property data is not confirmed. You must call confirmPropertyData before loading compliance_check rules.",
+        nextAction: "confirmPropertyData",
+        mustCallNext: "confirmPropertyData",
+        propertyData: {
+          id: propertyData.id,
+          confirmed: propertyData.confirmed,
+          confirmedAt: propertyData.confirmed_at,
+        },
+      },
+      { status: 409 }
+    );
+  }
+
+  return null;
+}
+
 export async function POST(request: Request) {
   try {
     const body = await request.json();
     const stage = body?.stage;
+    const sessionId = body?.sessionId;
 
     if (!stage) {
       return NextResponse.json(
         {
           ok: false,
+          success: false,
           error: "Missing required field: stage",
           allowedStages: ALLOWED_STAGES,
         },
@@ -196,11 +271,20 @@ export async function POST(request: Request) {
       return NextResponse.json(
         {
           ok: false,
+          success: false,
           error: `Invalid stage: ${String(stage)}`,
           allowedStages: ALLOWED_STAGES,
         },
         { status: 400 }
       );
+    }
+
+    if (stage === "compliance_check") {
+      const guardResponse = await guardComplianceCheck(sessionId);
+
+      if (guardResponse) {
+        return guardResponse;
+      }
     }
 
     return NextResponse.json({
@@ -211,7 +295,7 @@ export async function POST(request: Request) {
       ruleSummary: getRuleSummary(stage),
       mustFollow: getMustFollow(stage),
       nextInstruction: getNextInstruction(stage),
-      version: "1.0.2",
+      version: "1.0.3",
     });
   } catch {
     return NextResponse.json(
