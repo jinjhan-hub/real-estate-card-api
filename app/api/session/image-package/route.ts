@@ -57,7 +57,18 @@ export async function POST(request: Request) {
       );
     }
 
-    // 2. 確認 image package 已有 selected_style
+    // 2. 檢查流程階段是否正確
+    if (session.current_stage !== "FINAL_IMAGE_PROMPT") {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: `Invalid stage. Current stage is ${session.current_stage}, expected FINAL_IMAGE_PROMPT.`,
+        },
+        { status: 409 }
+      );
+    }
+
+    // 3. 確認 image package 已有 selected_style
     const { data: existingImagePackage, error: existingError } =
       await supabaseAdmin
         .from("session_image_packages")
@@ -99,18 +110,17 @@ export async function POST(request: Request) {
     }
 
     const now = new Date().toISOString();
-    const nextStage = "COMPLETED";
+    const nextStage = "IMAGE_GENERATION_READY";
 
     const imagePackagePayload = {
       final_image_prompt: imagePackage.finalImagePrompt,
       qrcode_policy: imagePackage.qrcodePolicy ?? null,
       portrait_policy: imagePackage.portraitPolicy ?? null,
       failsafe_policy: imagePackage.failsafePolicy ?? null,
-      generated_at: now,
       updated_at: now,
     };
 
-    // 3. 更新 session_image_packages
+    // 4. 更新 session_image_packages
     const { data: savedImagePackage, error: updateImagePackageError } =
       await supabaseAdmin
         .from("session_image_packages")
@@ -130,15 +140,14 @@ export async function POST(request: Request) {
       );
     }
 
-    // 4. 更新 sessions.current_stage
+    // 5. 更新 sessions.current_stage
     const { error: updateSessionError } = await supabaseAdmin
-  .from("sessions")
-  .update({
-    current_stage: nextStage,
-    completed_at: now,
-    updated_at: now,
-  })
-  .eq("id", sessionId);
+      .from("sessions")
+      .update({
+        current_stage: nextStage,
+        updated_at: now,
+      })
+      .eq("id", sessionId);
 
     if (updateSessionError) {
       return NextResponse.json(
@@ -151,7 +160,7 @@ export async function POST(request: Request) {
       );
     }
 
-    // 5. 寫入 session_logs
+    // 6. 寫入 session_logs
     const { error: logError } = await supabaseAdmin
       .from("session_logs")
       .insert({
