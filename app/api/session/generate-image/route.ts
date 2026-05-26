@@ -144,35 +144,6 @@ export async function POST(request: Request) {
           : "Image generation result prepared successfully.",
     };
 
-    const now = new Date().toISOString();
-
-    if (imagePackage) {
-      const { error: updateImagePackageError } = await supabaseAdmin
-        .from("session_image_packages")
-        .update({
-          generated_at: now,
-          updated_at: now,
-        })
-        .eq("session_id", sessionId);
-
-      if (updateImagePackageError) {
-        return jsonResponse(
-          {
-            ok: false,
-            success: false,
-            blocked: true,
-            error: "IMAGE_PACKAGE_UPDATE_FAILED",
-            message: updateImagePackageError.message,
-            sessionId,
-            currentStage,
-            nextAction: "generateImage",
-            mustCallNext: "generateImage",
-          },
-          500
-        );
-      }
-    }
-
     return jsonResponse({
       ok: true,
       success: true,

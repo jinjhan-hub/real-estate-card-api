@@ -131,8 +131,7 @@ export async function POST(request: Request) {
 
     // 4. 防止重複完成
     if (
-      existingImagePackage.image_generated === true ||
-      existingImagePackage.generated_at ||
+      existingImagePackage.image_generated === true &&
       existingImagePackage.generated_image_url
     ) {
       return NextResponse.json(
