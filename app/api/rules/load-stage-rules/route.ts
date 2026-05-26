@@ -34,6 +34,7 @@ function isValidStage(stage: unknown): stage is Stage {
 function isValidUuid(value: unknown): value is string {
   return typeof value === "string" && UUID_REGEX.test(value);
 }
+
 function blockResponse(params: {
   error: string;
   message: string;
@@ -317,14 +318,7 @@ async function guardComplianceCheck(sessionId: unknown) {
   const stage: Stage = "compliance_check";
 
   if (typeof sessionId !== "string" || !sessionId) {
-    return blockResponse({
-      error: "MISSING_SESSION_ID",
-      message:
-        "sessionId is required before loading compliance_check rules. You must call confirmPropertyData first, then load compliance_check with sessionId.",
-      nextAction: "confirmPropertyData",
-      mustCallNext: "confirmPropertyData",
-      requiredStage: "USER_CONFIRMATION",
-    });
+    return missingSessionIdResponse(stage);
   }
 
   if (!isValidUuid(sessionId)) {
