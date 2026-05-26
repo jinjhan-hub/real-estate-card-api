@@ -80,7 +80,7 @@ export async function POST(req: NextRequest) {
     }
 
     const { error: upsertError } = await supabaseAdmin
-      .from("image_packages")
+      .from("session_image_packages")
       .upsert(
         {
           session_id: sessionId,
