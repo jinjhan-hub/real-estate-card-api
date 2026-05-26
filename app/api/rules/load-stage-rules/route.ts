@@ -71,19 +71,34 @@ function isStageKey(stage: string): stage is StageKey {
   return stage in STAGE_RULE_MAP;
 }
 
+function jsonResponse(data: unknown, status = 200) {
+  return NextResponse.json(data, {
+    status,
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+    },
+  });
+}
+
 async function fetchStageRule(fileName: string) {
   const url = `${GITHUB_RULE_BASE_URL}/${fileName}`;
 
   const response = await fetch(url, {
     method: "GET",
     cache: "no-store",
+    headers: {
+      Accept: "text/markdown; charset=utf-8, text/plain; charset=utf-8",
+    },
   });
 
   if (!response.ok) {
     throw new Error(`Failed to load rule file: ${fileName}`);
   }
 
-  return response.text();
+  const buffer = await response.arrayBuffer();
+  const decoder = new TextDecoder("utf-8");
+
+  return decoder.decode(buffer);
 }
 
 export async function POST(req: NextRequest) {
@@ -95,7 +110,7 @@ export async function POST(req: NextRequest) {
     const currentStage = body?.currentStage ?? null;
 
     if (!stage || typeof stage !== "string") {
-      return NextResponse.json(
+      return jsonResponse(
         {
           ok: false,
           success: false,
@@ -112,12 +127,12 @@ export async function POST(req: NextRequest) {
             "缺少 stage，請先確認目前流程階段，再呼叫 loadStageRules。",
           message: "Missing stage.",
         },
-        { status: 400 }
+        400
       );
     }
 
     if (!isStageKey(stage)) {
-      return NextResponse.json(
+      return jsonResponse(
         {
           ok: false,
           success: false,
@@ -134,7 +149,7 @@ export async function POST(req: NextRequest) {
             "stage 不在允許清單內，請先確認目前流程階段，再呼叫正確的 loadStageRules。",
           message: `Unknown stage: ${stage}`,
         },
-        { status: 400 }
+        400
       );
     }
 
@@ -142,7 +157,7 @@ export async function POST(req: NextRequest) {
 
     const rule = await fetchStageRule(ruleConfig.fileName);
 
-    return NextResponse.json({
+    return jsonResponse({
       ok: true,
       success: true,
       blocked: false,
@@ -162,7 +177,7 @@ export async function POST(req: NextRequest) {
     const message =
       error instanceof Error ? error.message : "Unknown loadStageRules error.";
 
-    return NextResponse.json(
+    return jsonResponse(
       {
         ok: false,
         success: false,
@@ -179,7 +194,7 @@ export async function POST(req: NextRequest) {
           "規則載入失敗，請先檢查 GitHub raw markdown 是否可讀，或確認 stage 是否正確。",
         message,
       },
-      { status: 500 }
+      500
     );
   }
 }
