@@ -90,20 +90,20 @@ export async function POST(req: NextRequest) {
         }
       );
 
-    if (upsertError) {
-      return simpleActionResponse({
-        ok: false,
-        success: false,
-        sessionId,
-        currentStage,
-        nextStage: currentStage,
-        nextAction: "saveFinalImagePrompt",
-        mustCallNext: "saveFinalImagePrompt",
-        requiredStage: "FINAL_IMAGE_PROMPT",
-        message: "Failed to save final image prompt.",
-        error: "SAVE_FINAL_IMAGE_PROMPT_FAILED"
-      });
-    }
+   if (upsertError) {
+  return simpleActionResponse({
+    ok: false,
+    success: false,
+    sessionId,
+    currentStage,
+    nextStage: currentStage,
+    nextAction: "saveFinalImagePrompt",
+    mustCallNext: "saveFinalImagePrompt",
+    requiredStage: "FINAL_IMAGE_PROMPT",
+    message: upsertError.message,
+    error: "SAVE_FINAL_IMAGE_PROMPT_FAILED"
+  });
+}
 
     await supabaseAdmin
       .from("sessions")
