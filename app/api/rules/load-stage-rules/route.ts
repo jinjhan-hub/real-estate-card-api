@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
 const GITHUB_RULE_BASE_URL =
   "https://raw.githubusercontent.com/jinjhan-hub/real-estate-gpt-knowledge/main/fb_card_public/stage_rules/v1";
@@ -101,13 +102,56 @@ async function fetchStageRule(fileName: string) {
   return decoder.decode(buffer);
 }
 
+async function getSessionCurrentStage(sessionId: string) {
+  const { data, error } = await supabaseAdmin
+    .from("sessions")
+    .select("id, current_stage, completed_at")
+    .eq("id", sessionId)
+    .single();
+
+  if (error || !data) {
+    return {
+      ok: false,
+      session: null,
+      message: error?.message ?? "Session not found.",
+    };
+  }
+
+  return {
+    ok: true,
+    session: data,
+    message: "Session loaded.",
+  };
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
 
     const stage = body?.stage;
     const sessionId = body?.sessionId ?? null;
-    const currentStage = body?.currentStage ?? null;
+
+    if (!sessionId || typeof sessionId !== "string") {
+      return jsonResponse(
+        {
+          ok: false,
+          success: false,
+          blocked: true,
+          sessionId: null,
+          stage: stage ?? null,
+          ruleLoaded: false,
+          ruleKey: null,
+          currentStage: null,
+          requiredStage: null,
+          nextAction: "getSessionStatus",
+          mustCallNext: "getSessionStatus",
+          nextInstruction:
+            "缺少 sessionId，請先呼叫 startSession 或 getSessionStatus，取得目前 session 狀態後再載入階段規則。",
+          message: "Missing sessionId.",
+        },
+        400
+      );
+    }
 
     if (!stage || typeof stage !== "string") {
       return jsonResponse(
@@ -119,7 +163,7 @@ export async function POST(req: NextRequest) {
           stage: null,
           ruleLoaded: false,
           ruleKey: null,
-          currentStage,
+          currentStage: null,
           requiredStage: null,
           nextAction: "getSessionStatus",
           mustCallNext: "getSessionStatus",
@@ -141,7 +185,7 @@ export async function POST(req: NextRequest) {
           stage,
           ruleLoaded: false,
           ruleKey: null,
-          currentStage,
+          currentStage: null,
           requiredStage: null,
           nextAction: "getSessionStatus",
           mustCallNext: "getSessionStatus",
@@ -155,6 +199,77 @@ export async function POST(req: NextRequest) {
 
     const ruleConfig = STAGE_RULE_MAP[stage];
 
+    const sessionResult = await getSessionCurrentStage(sessionId);
+
+    if (!sessionResult.ok || !sessionResult.session) {
+      return jsonResponse(
+        {
+          ok: false,
+          success: false,
+          blocked: true,
+          sessionId,
+          stage,
+          ruleLoaded: false,
+          ruleKey: ruleConfig.ruleKey,
+          currentStage: null,
+          requiredStage: ruleConfig.requiredStage,
+          nextAction: "getSessionStatus",
+          mustCallNext: "getSessionStatus",
+          nextInstruction:
+            "查無 session，請先呼叫 startSession 建立流程，或確認 sessionId 是否正確。",
+          message: sessionResult.message,
+        },
+        404
+      );
+    }
+
+    const currentStage = sessionResult.session.current_stage;
+    const completedAt = sessionResult.session.completed_at;
+
+    if (completedAt) {
+      return jsonResponse(
+        {
+          ok: false,
+          success: false,
+          blocked: true,
+          sessionId,
+          stage,
+          ruleLoaded: false,
+          ruleKey: ruleConfig.ruleKey,
+          currentStage,
+          requiredStage: ruleConfig.requiredStage,
+          nextAction: null,
+          mustCallNext: null,
+          nextInstruction:
+            "此 session 已完成，不得重新載入階段規則或重跑流程。若要重新測試，請建立新的 session。",
+          message: "Session already completed.",
+        },
+        409
+      );
+    }
+
+    if (currentStage !== ruleConfig.requiredStage) {
+      return jsonResponse(
+        {
+          ok: false,
+          success: false,
+          blocked: true,
+          sessionId,
+          stage,
+          ruleLoaded: false,
+          ruleKey: ruleConfig.ruleKey,
+          currentStage,
+          requiredStage: ruleConfig.requiredStage,
+          nextAction: "getSessionStatus",
+          mustCallNext: "getSessionStatus",
+          nextInstruction:
+            "目前 session 階段不符合此規則載入條件。請先依 currentStage 接續流程，不得跳步載入其他階段規則。",
+          message: `Stage mismatch. Current stage is ${currentStage}, but required stage is ${ruleConfig.requiredStage}.`,
+        },
+        409
+      );
+    }
+
     const rule = await fetchStageRule(ruleConfig.fileName);
 
     return jsonResponse({
@@ -165,7 +280,7 @@ export async function POST(req: NextRequest) {
       stage,
       ruleLoaded: true,
       ruleKey: ruleConfig.ruleKey,
-      currentStage: currentStage ?? ruleConfig.requiredStage,
+      currentStage,
       requiredStage: ruleConfig.requiredStage,
       nextAction: ruleConfig.nextAction,
       mustCallNext: ruleConfig.mustCallNext,
@@ -191,7 +306,7 @@ export async function POST(req: NextRequest) {
         nextAction: "getSessionStatus",
         mustCallNext: "getSessionStatus",
         nextInstruction:
-          "規則載入失敗，請先檢查 GitHub raw markdown 是否可讀，或確認 stage 是否正確。",
+          "規則載入失敗，請先檢查 GitHub raw markdown 是否可讀、Supabase 連線是否正常，或確認 stage 是否正確。",
         message,
       },
       500
