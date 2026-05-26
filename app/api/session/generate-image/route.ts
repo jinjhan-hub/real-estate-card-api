@@ -17,6 +17,7 @@ export async function POST(request: Request) {
 
     const sessionId = body.sessionId?.trim();
     const mode = body.mode ?? "mock";
+    const isMock = mode === "mock";
 
     if (!sessionId) {
       return jsonResponse(
@@ -90,7 +91,7 @@ export async function POST(request: Request) {
 
     if (!imagePackage) {
       warnings.push(
-        "找不到 session_image_packages row；本次 generateImage 以 mock 模式繼續，用於流程閉環測試。"
+        "找不到 session_image_packages row；本次 generateImage 僅可作流程測試，不代表真實圖片已產生。"
       );
     }
 
@@ -124,46 +125,51 @@ export async function POST(request: Request) {
       }
     }
 
-    const generatedImageUrl =
-      mode === "mock"
-        ? "/mnt/data/mock-real-estate-card.png"
-        : "/mnt/data/manual-real-estate-card.png";
+    const generatedImageUrl = isMock
+      ? "/mnt/data/mock-real-estate-card.png"
+      : null;
+
+    const outputPaths = generatedImageUrl ? [generatedImageUrl] : [];
 
     const generationResult = {
-      success: true,
-      imageCount: 1,
-      outputPaths: [generatedImageUrl],
+      success: isMock,
+      imageCount: isMock ? 1 : 0,
+      outputPaths,
       generatedImageUrl,
-      checked: true,
-      passed: true,
+      checked: isMock,
+      passed: isMock,
       mode,
-      mock: mode === "mock",
+      mock: isMock,
+      failedReason: isMock
+        ? null
+        : "MANUAL_MODE_DOES_NOT_GENERATE_VISIBLE_IMAGE",
       notes:
         warnings.length > 0
           ? warnings.join(" ")
-          : "Image generation result prepared successfully.",
+          : isMock
+            ? "Mock image generation result prepared successfully."
+            : "Manual mode does not generate a visible image. Do not call completeGeneration until a real visible image is provided and reviewed.",
     };
 
     return jsonResponse({
       ok: true,
-      success: true,
-      blocked: false,
+      success: isMock,
+      blocked: !isMock,
       sessionId,
       currentStage,
       nextStage: currentStage,
-      nextAction: "completeGeneration",
-      mustCallNext: "completeGeneration",
-      imageGenerated: true,
-      image_generated: true,
+      nextAction: isMock ? "completeGeneration" : "manualReview",
+      mustCallNext: isMock ? "completeGeneration" : "manualReview",
+      imageGenerated: isMock,
+      image_generated: isMock,
       generatedImageUrl,
       generated_image_url: generatedImageUrl,
-      outputPaths: [generatedImageUrl],
+      outputPaths,
       generationResult,
       warnings,
-      message:
-        mode === "mock"
-          ? "Mock image generation completed. Ready to call completeGeneration."
-          : "Manual image generation result prepared. Ready to call completeGeneration.",
+      message: isMock
+        ? "Mock image generation completed. Ready to call completeGeneration."
+        : "Manual mode does not generate a visible image. Provide a real visible image before completeGeneration.",
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
