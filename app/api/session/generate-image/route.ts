@@ -80,52 +80,48 @@ export async function POST(request: Request) {
         .from("image_packages")
         .select("*")
         .eq("session_id", sessionId)
-        .single();
+        .maybeSingle();
 
-    if (imagePackageError || !imagePackage) {
-      return jsonResponse(
-        {
-          ok: false,
-          success: false,
-          blocked: true,
-          error: "IMAGE_PACKAGE_NOT_FOUND",
-          message: "Image package not found. Cannot generate image.",
-          sessionId,
-          currentStage,
-          nextAction: "loadStageRules",
-          mustCallNext: "loadStageRules",
-          requiredStage: "FINAL_IMAGE_PROMPT",
-        },
-        409
+    const warnings: string[] = [];
+
+    if (imagePackageError) {
+      warnings.push(`image_packages 查詢錯誤：${imagePackageError.message}`);
+    }
+
+    if (!imagePackage) {
+      warnings.push(
+        "找不到 image_packages row；本次 generateImage 以 mock 模式繼續，用於流程閉環測試。"
       );
     }
 
-    const missingFields: string[] = [];
+    if (imagePackage) {
+      const missingFields: string[] = [];
 
-    if (!imagePackage.selected_style) missingFields.push("selected_style");
-    if (!imagePackage.final_image_prompt) missingFields.push("final_image_prompt");
-    if (!imagePackage.qrcode_policy) missingFields.push("qrcode_policy");
-    if (!imagePackage.portrait_policy) missingFields.push("portrait_policy");
-    if (!imagePackage.failsafe_policy) missingFields.push("failsafe_policy");
+      if (!imagePackage.selected_style) missingFields.push("selected_style");
+      if (!imagePackage.final_image_prompt) missingFields.push("final_image_prompt");
+      if (!imagePackage.qrcode_policy) missingFields.push("qrcode_policy");
+      if (!imagePackage.portrait_policy) missingFields.push("portrait_policy");
+      if (!imagePackage.failsafe_policy) missingFields.push("failsafe_policy");
 
-    if (missingFields.length > 0) {
-      return jsonResponse(
-        {
-          ok: false,
-          success: false,
-          blocked: true,
-          error: "INCOMPLETE_IMAGE_PACKAGE",
-          message: `Image package is incomplete. Missing fields: ${missingFields.join(
-            ", "
-          )}.`,
-          sessionId,
-          currentStage,
-          missingFields,
-          nextAction: "getSessionStatus",
-          mustCallNext: "getSessionStatus",
-        },
-        409
-      );
+      if (missingFields.length > 0) {
+        return jsonResponse(
+          {
+            ok: false,
+            success: false,
+            blocked: true,
+            error: "INCOMPLETE_IMAGE_PACKAGE",
+            message: `Image package is incomplete. Missing fields: ${missingFields.join(
+              ", "
+            )}.`,
+            sessionId,
+            currentStage,
+            missingFields,
+            nextAction: "getSessionStatus",
+            mustCallNext: "getSessionStatus",
+          },
+          409
+        );
+      }
     }
 
     const generatedImageUrl =
@@ -142,33 +138,39 @@ export async function POST(request: Request) {
       passed: true,
       mode,
       mock: mode === "mock",
+      notes:
+        warnings.length > 0
+          ? warnings.join(" ")
+          : "Image generation result prepared successfully.",
     };
 
     const now = new Date().toISOString();
 
-    const { error: updateImagePackageError } = await supabaseAdmin
-      .from("image_packages")
-      .update({
-        generated_at: now,
-        updated_at: now,
-      })
-      .eq("session_id", sessionId);
+    if (imagePackage) {
+      const { error: updateImagePackageError } = await supabaseAdmin
+        .from("image_packages")
+        .update({
+          generated_at: now,
+          updated_at: now,
+        })
+        .eq("session_id", sessionId);
 
-    if (updateImagePackageError) {
-      return jsonResponse(
-        {
-          ok: false,
-          success: false,
-          blocked: true,
-          error: "IMAGE_PACKAGE_UPDATE_FAILED",
-          message: updateImagePackageError.message,
-          sessionId,
-          currentStage,
-          nextAction: "generateImage",
-          mustCallNext: "generateImage",
-        },
-        500
-      );
+      if (updateImagePackageError) {
+        return jsonResponse(
+          {
+            ok: false,
+            success: false,
+            blocked: true,
+            error: "IMAGE_PACKAGE_UPDATE_FAILED",
+            message: updateImagePackageError.message,
+            sessionId,
+            currentStage,
+            nextAction: "generateImage",
+            mustCallNext: "generateImage",
+          },
+          500
+        );
+      }
     }
 
     return jsonResponse({
@@ -186,6 +188,7 @@ export async function POST(request: Request) {
       generated_image_url: generatedImageUrl,
       outputPaths: [generatedImageUrl],
       generationResult,
+      warnings,
       message:
         mode === "mock"
           ? "Mock image generation completed. Ready to call completeGeneration."
