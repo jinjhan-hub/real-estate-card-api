@@ -3,7 +3,7 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
 export const runtime = "nodejs";
 
-const API_VERSION = "1.0.3";
+const API_VERSION = "1.0.4-stage-lock";
 
 type Stage =
   | "gpts_api_flow"
