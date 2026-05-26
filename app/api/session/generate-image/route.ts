@@ -77,7 +77,7 @@ export async function POST(request: Request) {
 
     const { data: imagePackage, error: imagePackageError } =
       await supabaseAdmin
-        .from("image_packages")
+        .from("session_image_packages")
         .select("*")
         .eq("session_id", sessionId)
         .maybeSingle();
@@ -85,12 +85,12 @@ export async function POST(request: Request) {
     const warnings: string[] = [];
 
     if (imagePackageError) {
-      warnings.push(`image_packages 查詢錯誤：${imagePackageError.message}`);
+      warnings.push(`session_image_packages 查詢錯誤：${imagePackageError.message}`);
     }
 
     if (!imagePackage) {
       warnings.push(
-        "找不到 image_packages row；本次 generateImage 以 mock 模式繼續，用於流程閉環測試。"
+        "找不到 session_image_packages row；本次 generateImage 以 mock 模式繼續，用於流程閉環測試。"
       );
     }
 
@@ -148,7 +148,7 @@ export async function POST(request: Request) {
 
     if (imagePackage) {
       const { error: updateImagePackageError } = await supabaseAdmin
-        .from("image_packages")
+        .from("session_image_packages")
         .update({
           generated_at: now,
           updated_at: now,
