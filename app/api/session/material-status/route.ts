@@ -7,7 +7,6 @@ type MaterialStatusBody = {
     hasBusinessCard?: boolean;
     hasPortrait?: boolean;
     hasQrcode?: boolean;
-    hasOtherMaterials?: boolean;
   };
 };
 
@@ -100,7 +99,6 @@ export async function POST(request: Request) {
       has_business_card: materials.hasBusinessCard === true,
       has_portrait: materials.hasPortrait === true,
       has_qrcode: materials.hasQrcode === true,
-      has_other_materials: materials.hasOtherMaterials === true,
     };
 
     const { data: existingStatus } = await supabaseAdmin
@@ -199,7 +197,6 @@ export async function POST(request: Request) {
         hasBusinessCard: savedStatus.has_business_card,
         hasPortrait: savedStatus.has_portrait,
         hasQrcode: savedStatus.has_qrcode,
-        hasOtherMaterials: savedStatus.has_other_materials,
       },
       currentStage: nextStage,
       nextStage,
