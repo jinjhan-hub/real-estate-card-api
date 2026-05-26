@@ -77,20 +77,16 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const { error: upsertError } = await supabaseAdmin
-     .from("session_image_packages")
-      .upsert(
-        {
-          session_id: sessionId,
-          final_image_prompt: finalImagePrompt,
-          updated_at: new Date().toISOString()
-        },
-        {
-          onConflict: "session_id"
-        }
-      );
+    const { data: latestImagePackage, error: findImagePackageError } =
+  await supabaseAdmin
+    .from("session_image_packages")
+    .select("id")
+    .eq("session_id", sessionId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
 
-   if (upsertError) {
+if (findImagePackageError) {
   return simpleActionResponse({
     ok: false,
     success: false,
@@ -100,7 +96,45 @@ export async function POST(req: NextRequest) {
     nextAction: "saveFinalImagePrompt",
     mustCallNext: "saveFinalImagePrompt",
     requiredStage: "FINAL_IMAGE_PROMPT",
-    message: upsertError.message,
+    message: findImagePackageError.message,
+    error: "FIND_IMAGE_PACKAGE_FAILED"
+  });
+}
+
+if (!latestImagePackage) {
+  return simpleActionResponse({
+    ok: false,
+    success: false,
+    sessionId,
+    currentStage,
+    nextStage: currentStage,
+    nextAction: "selectImageStyle",
+    mustCallNext: "selectImageStyle",
+    requiredStage: "STYLE_SELECTION",
+    message: "Image package not found. You must call selectImageStyle before saveFinalImagePrompt.",
+    error: "IMAGE_PACKAGE_NOT_FOUND"
+  });
+}
+
+const { error: updateError } = await supabaseAdmin
+  .from("session_image_packages")
+  .update({
+    final_image_prompt: finalImagePrompt,
+    updated_at: new Date().toISOString()
+  })
+  .eq("id", latestImagePackage.id);
+
+if (updateError) {
+  return simpleActionResponse({
+    ok: false,
+    success: false,
+    sessionId,
+    currentStage,
+    nextStage: currentStage,
+    nextAction: "saveFinalImagePrompt",
+    mustCallNext: "saveFinalImagePrompt",
+    requiredStage: "FINAL_IMAGE_PROMPT",
+    message: updateError.message,
     error: "SAVE_FINAL_IMAGE_PROMPT_FAILED"
   });
 }
