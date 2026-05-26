@@ -79,35 +79,69 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const { error: upsertError } = await supabaseAdmin
-      .from("session_image_packages")
-      .upsert(
-        {
-          session_id: sessionId,
-          qrcode_policy: qrcodePolicy,
-          portrait_policy: portraitPolicy,
-          failsafe_policy: failsafePolicy,
-          updated_at: new Date().toISOString()
-        },
-        {
-          onConflict: "session_id"
-        }
-      );
+    const { data: latestImagePackage, error: findImagePackageError } =
+  await supabaseAdmin
+    .from("session_image_packages")
+    .select("id")
+    .eq("session_id", sessionId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
 
-    if (upsertError) {
-      return simpleActionResponse({
-        ok: false,
-        success: false,
-        sessionId,
-        currentStage,
-        nextStage: currentStage,
-        nextAction: "saveImagePolicies",
-        mustCallNext: "saveImagePolicies",
-        requiredStage: "IMAGE_POLICIES",
-        message: "Failed to save image policies.",
-        error: "SAVE_IMAGE_POLICIES_FAILED"
-      });
-    }
+if (findImagePackageError) {
+  return simpleActionResponse({
+    ok: false,
+    success: false,
+    sessionId,
+    currentStage,
+    nextStage: currentStage,
+    nextAction: "saveImagePolicies",
+    mustCallNext: "saveImagePolicies",
+    requiredStage: "IMAGE_POLICIES",
+    message: findImagePackageError.message,
+    error: "FIND_IMAGE_PACKAGE_FAILED"
+  });
+}
+
+if (!latestImagePackage) {
+  return simpleActionResponse({
+    ok: false,
+    success: false,
+    sessionId,
+    currentStage,
+    nextStage: currentStage,
+    nextAction: "selectImageStyle",
+    mustCallNext: "selectImageStyle",
+    requiredStage: "STYLE_SELECTION",
+    message: "Image package not found. You must call selectImageStyle before saveImagePolicies.",
+    error: "IMAGE_PACKAGE_NOT_FOUND"
+  });
+}
+
+const { error: updateError } = await supabaseAdmin
+  .from("session_image_packages")
+  .update({
+    qrcode_policy: qrcodePolicy,
+    portrait_policy: portraitPolicy,
+    failsafe_policy: failsafePolicy,
+    updated_at: new Date().toISOString()
+  })
+  .eq("id", latestImagePackage.id);
+
+if (updateError) {
+  return simpleActionResponse({
+    ok: false,
+    success: false,
+    sessionId,
+    currentStage,
+    nextStage: currentStage,
+    nextAction: "saveImagePolicies",
+    mustCallNext: "saveImagePolicies",
+    requiredStage: "IMAGE_POLICIES",
+    message: updateError.message,
+    error: "SAVE_IMAGE_POLICIES_FAILED"
+  });
+}
 
     await supabaseAdmin
       .from("sessions")
