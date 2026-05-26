@@ -16,7 +16,7 @@ export async function POST(request: Request) {
     const body = (await request.json()) as GenerateImageBody;
 
     const sessionId = body.sessionId?.trim();
-    const mode = body.mode ?? "mock";
+    const mode = body.mode ?? "manual";
     const isMock = mode === "mock";
 
     if (!sessionId) {
@@ -90,86 +90,149 @@ export async function POST(request: Request) {
     }
 
     if (!imagePackage) {
-      warnings.push(
-        "找不到 session_image_packages row；本次 generateImage 僅可作流程測試，不代表真實圖片已產生。"
+      return jsonResponse(
+        {
+          ok: false,
+          success: false,
+          blocked: true,
+          error: "IMAGE_PACKAGE_NOT_FOUND",
+          message: "找不到 session_image_packages row，無法產生 GPTs 對話端產圖文字包。",
+          sessionId,
+          currentStage,
+          nextAction: "getSessionStatus",
+          mustCallNext: "getSessionStatus",
+        },
+        409
       );
     }
 
-    if (imagePackage) {
-      const missingFields: string[] = [];
+    const missingFields: string[] = [];
 
-      if (!imagePackage.selected_style) missingFields.push("selected_style");
-      if (!imagePackage.final_image_prompt) missingFields.push("final_image_prompt");
-      if (!imagePackage.qrcode_policy) missingFields.push("qrcode_policy");
-      if (!imagePackage.portrait_policy) missingFields.push("portrait_policy");
-      if (!imagePackage.failsafe_policy) missingFields.push("failsafe_policy");
+    if (!imagePackage.selected_style) missingFields.push("selected_style");
+    if (!imagePackage.final_image_prompt) missingFields.push("final_image_prompt");
+    if (!imagePackage.qrcode_policy) missingFields.push("qrcode_policy");
+    if (!imagePackage.portrait_policy) missingFields.push("portrait_policy");
+    if (!imagePackage.failsafe_policy) missingFields.push("failsafe_policy");
 
-      if (missingFields.length > 0) {
-        return jsonResponse(
-          {
-            ok: false,
-            success: false,
-            blocked: true,
-            error: "INCOMPLETE_IMAGE_PACKAGE",
-            message: `Image package is incomplete. Missing fields: ${missingFields.join(
-              ", "
-            )}.`,
-            sessionId,
-            currentStage,
-            missingFields,
-            nextAction: "getSessionStatus",
-            mustCallNext: "getSessionStatus",
-          },
-          409
-        );
-      }
+    if (missingFields.length > 0) {
+      return jsonResponse(
+        {
+          ok: false,
+          success: false,
+          blocked: true,
+          error: "INCOMPLETE_IMAGE_PACKAGE",
+          message: `Image package is incomplete. Missing fields: ${missingFields.join(
+            ", "
+          )}.`,
+          sessionId,
+          currentStage,
+          missingFields,
+          nextAction: "getSessionStatus",
+          mustCallNext: "getSessionStatus",
+        },
+        409
+      );
     }
 
-    const generatedImageUrl = isMock
-      ? "/mnt/data/mock-real-estate-card.png"
-      : null;
-
-    const outputPaths = generatedImageUrl ? [generatedImageUrl] : [];
-
-    const generationResult = {
-      success: isMock,
-      imageCount: isMock ? 1 : 0,
-      outputPaths,
-      generatedImageUrl,
-      checked: isMock,
-      passed: isMock,
+    const imageGenerationPackage = {
       mode,
-      mock: isMock,
-      failedReason: isMock
-        ? null
-        : "MANUAL_MODE_DOES_NOT_GENERATE_VISIBLE_IMAGE",
-      notes:
-        warnings.length > 0
-          ? warnings.join(" ")
-          : isMock
-            ? "Mock image generation result prepared successfully."
-            : "Manual mode does not generate a visible image. Do not call completeGeneration until a real visible image is provided and reviewed.",
+      imageHandling: "GPTS_CONVERSATION_ONLY",
+      storagePolicy: {
+        apiReceivesImages: false,
+        apiStoresImages: false,
+        databaseStoresImages: false,
+        databaseStoresImageUrls: false,
+        imageBase64Allowed: false,
+        imageUrlAllowed: false,
+        textOnlyApi: true,
+      },
+      selectedStyle: imagePackage.selected_style,
+      finalImagePrompt: imagePackage.final_image_prompt,
+      qrcodePolicy: imagePackage.qrcode_policy,
+      portraitPolicy: imagePackage.portrait_policy,
+      failsafePolicy: imagePackage.failsafe_policy,
+      instruction:
+        "請在 GPTs 對話端使用使用者上傳的房屋照、人物照與 QR Code 生成圖片。API 與資料庫不得接收、儲存或回傳任何圖片、圖片網址或 base64。圖片生成後必須在對話端人工檢查，確認通過後才可呼叫 completeGeneration。",
+      reviewChecklist: [
+        "房屋照片不得被 AI 改造成不存在的空間、裝潢、家具、景觀或車庫。",
+        "若 hasPortrait = true，人物照不得換臉、不得修改五官、不得改變臉型或比例。",
+        "若 hasPortrait = false，不得生成虛構人物、假房仲或假代言人。",
+        "若 hasQrcode = true，QR Code 不得重畫、不得偽造、不得變形，且須由使用者實際掃描確認。",
+        "若 hasQrcode = false，不得生成假 QR Code。",
+        "圖卡文字不得新增不存在的價格、地址、坪數、格局、屋齡、車位、學區、商圈或賣點。",
+        "未完成人工視覺檢查前，不得呼叫 completeGeneration。",
+      ],
     };
+
+    if (isMock) {
+      const generatedImageUrl = "/mnt/data/mock-real-estate-card.png";
+
+      const generationResult = {
+        success: true,
+        imageCount: 1,
+        outputPaths: [generatedImageUrl],
+        generatedImageUrl,
+        checked: true,
+        passed: true,
+        mode,
+        mock: true,
+        reviewMethod: "mock_flow_test",
+        notes: "Mock image generation completed. This is only for flow testing.",
+      };
+
+      return jsonResponse({
+        ok: true,
+        success: true,
+        blocked: false,
+        sessionId,
+        currentStage,
+        nextStage: currentStage,
+        nextAction: "completeGeneration",
+        mustCallNext: "completeGeneration",
+        imageGenerated: true,
+        image_generated: true,
+        generatedImageUrl,
+        generated_image_url: generatedImageUrl,
+        outputPaths: [generatedImageUrl],
+        imageGenerationPackage,
+        generationResult,
+        warnings,
+        message: "Mock image generation completed. Ready to call completeGeneration.",
+      });
+    }
 
     return jsonResponse({
       ok: true,
-      success: isMock,
-      blocked: !isMock,
+      success: true,
+      blocked: false,
       sessionId,
       currentStage,
       nextStage: currentStage,
-      nextAction: isMock ? "completeGeneration" : "manualReview",
-      mustCallNext: isMock ? "completeGeneration" : "manualReview",
-      imageGenerated: isMock,
-      image_generated: isMock,
-      generatedImageUrl,
-      generated_image_url: generatedImageUrl,
-      outputPaths,
-      generationResult,
+      nextAction: "generateImageInConversation",
+      mustCallNext: "generateImageInConversation",
+      imageGenerated: false,
+      image_generated: false,
+      generatedImageUrl: null,
+      generated_image_url: null,
+      outputPaths: [],
+      imageGenerationPackage,
+      generationResult: {
+        success: false,
+        imageCount: 0,
+        outputPaths: [],
+        generatedImageUrl: null,
+        checked: false,
+        passed: false,
+        mode,
+        mock: false,
+        reviewMethod: "manual_visual_review_in_gpts",
+        failedReason: "WAITING_FOR_GPTS_CONVERSATION_IMAGE_GENERATION",
+        notes:
+          "API has returned a text-only image generation package. Generate the image inside GPTs conversation using user-uploaded assets, then manually review it before completeGeneration.",
+      },
       warnings,
-      message: isMock
-        ? "Mock image generation completed. Ready to call completeGeneration."
-        : "Manual mode does not generate a visible image. Provide a real visible image before completeGeneration.",
+      message:
+        "Text-only image generation package prepared. Generate the image in GPTs conversation, then manually review before completeGeneration.",
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
