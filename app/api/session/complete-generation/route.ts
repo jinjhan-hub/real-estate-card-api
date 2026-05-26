@@ -6,8 +6,16 @@ type GenerationResult = {
   provider?: string;
   imageCount?: number;
   outputPaths?: string[];
-  generatedImageUrl?: string;
+  generatedImageUrl?: string | null;
+  checked?: boolean;
+  passed?: boolean;
+  mode?: string;
+  mock?: boolean;
+  reviewMethod?: string;
+  failedReason?: string;
+  failedReasons?: string[];
   note?: string;
+  notes?: string;
 };
 
 export async function POST(request: Request) {
@@ -130,10 +138,8 @@ export async function POST(request: Request) {
     }
 
     // 4. 防止重複完成
-    if (
-      existingImagePackage.image_generated === true &&
-      existingImagePackage.generated_image_url
-    ) {
+    // 新架構允許 generated_image_url = null，所以不能再用 generated_image_url 判斷是否已完成。
+    if (existingImagePackage.image_generated === true) {
       return NextResponse.json(
         {
           ok: false,
@@ -147,7 +153,9 @@ export async function POST(request: Request) {
       );
     }
 
-    // 5. 關鍵防呆：沒有圖片生成成功資料，不准 complete-generation
+    // 5. 關鍵防呆：支援兩種完成模式
+    // A. legacy/mock/API 產圖模式：必須有 outputPaths[0] 或 generatedImageUrl
+    // B. gpts_conversation 對話端產圖模式：不得要求圖片路徑或 URL，但必須人工檢查通過
     const outputPaths = Array.isArray(generationResult?.outputPaths)
       ? generationResult.outputPaths.filter(
           (item) => typeof item === "string" && item.trim().length > 0
@@ -160,13 +168,22 @@ export async function POST(request: Request) {
         ? generationResult.generatedImageUrl.trim()
         : outputPaths[0] ?? null;
 
-    const hasValidGenerationResult =
+    const hasBasicSuccess =
       generationResult?.success === true &&
       typeof generationResult.imageCount === "number" &&
-      generationResult.imageCount > 0 &&
-      !!generatedImageUrl;
+      generationResult.imageCount > 0;
 
-    if (!hasValidGenerationResult) {
+    const hasValidLegacyGenerationResult = hasBasicSuccess && !!generatedImageUrl;
+
+    const hasValidGptsConversationResult =
+      hasBasicSuccess &&
+      generationResult?.mode === "gpts_conversation" &&
+      generationResult?.mock === false &&
+      generationResult?.reviewMethod === "manual_visual_review_in_gpts" &&
+      generationResult?.checked === true &&
+      generationResult?.passed === true;
+
+    if (!hasValidLegacyGenerationResult && !hasValidGptsConversationResult) {
       return NextResponse.json(
         {
           ok: false,
@@ -174,10 +191,10 @@ export async function POST(request: Request) {
           blocked: true,
           error: "IMAGE_NOT_GENERATED",
           message:
-            "Image has not been generated successfully yet. complete-generation requires generationResult.success=true, imageCount > 0, and at least one output path or generatedImageUrl.",
+            "Image has not been completed successfully yet. complete-generation requires either a legacy generated image URL/path, or a gpts_conversation result that passed manual visual review.",
           currentStage: session.current_stage,
           requiredCondition:
-            "generationResult.success=true, generationResult.imageCount > 0, generationResult.outputPaths[0] or generationResult.generatedImageUrl exists",
+            "Either: A) generationResult.success=true, imageCount > 0, and outputPaths[0] or generatedImageUrl exists; OR B) generationResult.success=true, imageCount > 0, mode='gpts_conversation', mock=false, reviewMethod='manual_visual_review_in_gpts', checked=true, passed=true.",
           nextAction: "image_generation",
           mustCallNext: "image_generation",
         },
@@ -188,13 +205,16 @@ export async function POST(request: Request) {
     const now = new Date().toISOString();
     const nextStage = "COMPLETED";
 
+    // gpts_conversation 模式不得把圖片網址、路徑、base64 寫入 DB。
+    const imageUrlToSave = hasValidGptsConversationResult ? null : generatedImageUrl;
+
     // 6. 更新 session_image_packages：記錄圖片已生成
     const { data: savedImagePackage, error: updateImagePackageError } =
       await supabaseAdmin
         .from("session_image_packages")
         .update({
           image_generated: true,
-          generated_image_url: generatedImageUrl,
+          generated_image_url: imageUrlToSave,
           generated_at: now,
           updated_at: now,
         })
@@ -254,8 +274,16 @@ export async function POST(request: Request) {
         previousStage: session.current_stage,
         nextStage,
         selectedStyle: savedImagePackage.selected_style,
-        generationResult,
-        generatedImageUrl,
+        generationResult: {
+          ...generationResult,
+          // gpts_conversation 模式下，不把任何圖片路徑或 URL 寫進 log metadata。
+          outputPaths: hasValidGptsConversationResult ? [] : outputPaths,
+          generatedImageUrl: imageUrlToSave,
+        },
+        generatedImageUrl: imageUrlToSave,
+        completionMode: hasValidGptsConversationResult
+          ? "gpts_conversation"
+          : "legacy_generated_image_url",
       },
     });
 
