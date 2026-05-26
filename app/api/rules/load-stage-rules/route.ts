@@ -274,6 +274,156 @@ async function getImagePackage(sessionId: string) {
   return { data, error };
 }
 
+function getNextActionByCurrentStage(currentStage: string) {
+  const map: Record<
+    string,
+    {
+      nextAction: string;
+      mustCallNext: string;
+      requiredStage: string;
+    }
+  > = {
+    STORE_VERIFY: {
+      nextAction: "verifyStore",
+      mustCallNext: "verifyStore",
+      requiredStage: "STORE_VERIFY",
+    },
+    STORE_DATA_LOADED: {
+      nextAction: "loadStageRules",
+      mustCallNext: "loadStageRules",
+      requiredStage: "material_status",
+    },
+    MATERIAL_UPLOAD_GUIDE: {
+      nextAction: "updateMaterialStatus",
+      mustCallNext: "updateMaterialStatus",
+      requiredStage: "material_status",
+    },
+    DATA_EXTRACTION: {
+      nextAction: "loadStageRules",
+      mustCallNext: "loadStageRules",
+      requiredStage: "property_confirmation",
+    },
+    USER_CONFIRMATION: {
+      nextAction: "confirmPropertyData",
+      mustCallNext: "confirmPropertyData",
+      requiredStage: "USER_CONFIRMATION",
+    },
+    COMPLIANCE_CHECK: {
+      nextAction: "saveComplianceCheck",
+      mustCallNext: "saveComplianceCheck",
+      requiredStage: "COMPLIANCE_CHECK",
+    },
+    STYLE_SELECTION: {
+      nextAction: "selectImageStyle",
+      mustCallNext: "selectImageStyle",
+      requiredStage: "STYLE_SELECTION",
+    },
+    FINAL_IMAGE_PROMPT: {
+      nextAction: "saveImagePackage",
+      mustCallNext: "saveImagePackage",
+      requiredStage: "FINAL_IMAGE_PROMPT",
+    },
+    IMAGE_GENERATION_READY: {
+      nextAction: "image_generation",
+      mustCallNext: "image_generation",
+      requiredStage: "IMAGE_GENERATION_READY",
+    },
+    COMPLETED: {
+      nextAction: "none",
+      mustCallNext: "none",
+      requiredStage: "COMPLETED",
+    },
+  };
+
+  return (
+    map[currentStage] ?? {
+      nextAction: "getSessionStatus",
+      mustCallNext: "getSessionStatus",
+      requiredStage: currentStage,
+    }
+  );
+}
+
+async function guardRequestedStageMatchesCurrentStage(
+  stage: Stage,
+  sessionId: unknown
+) {
+  if (stage === "gpts_api_flow") {
+    return null;
+  }
+
+  if (typeof sessionId !== "string" || !sessionId) {
+    return missingSessionIdResponse(stage);
+  }
+
+  if (!isValidUuid(sessionId)) {
+    return invalidSessionIdResponse(stage);
+  }
+
+  const { data: session, error } = await getSession(sessionId);
+
+  if (error) {
+    return NextResponse.json(
+      {
+        ok: false,
+        success: false,
+        blocked: true,
+        version: API_VERSION,
+        error: "FAILED_TO_CHECK_SESSION",
+        message: error.message,
+      },
+      { status: 500 }
+    );
+  }
+
+  if (!session) {
+    return blockResponse({
+      error: "SESSION_NOT_FOUND",
+      message: "Session not found. You must startSession before continuing.",
+      nextAction: "startSession",
+      mustCallNext: "startSession",
+      requiredStage: "STORE_VERIFY",
+    });
+  }
+
+  const allowedCurrentStagesByRequestedStage: Record<Stage, string[]> = {
+    gpts_api_flow: [
+      "STORE_VERIFY",
+      "STORE_DATA_LOADED",
+      "MATERIAL_UPLOAD_GUIDE",
+      "DATA_EXTRACTION",
+      "USER_CONFIRMATION",
+      "COMPLIANCE_CHECK",
+      "STYLE_SELECTION",
+      "FINAL_IMAGE_PROMPT",
+      "IMAGE_GENERATION_READY",
+      "COMPLETED",
+    ],
+    material_status: ["STORE_DATA_LOADED", "MATERIAL_UPLOAD_GUIDE"],
+    property_confirmation: ["DATA_EXTRACTION", "USER_CONFIRMATION"],
+    compliance_check: ["COMPLIANCE_CHECK"],
+    style_selection: ["STYLE_SELECTION"],
+    final_image_prompt: ["FINAL_IMAGE_PROMPT"],
+    image_generation_failsafe: ["IMAGE_GENERATION_READY"],
+  };
+
+  const allowedCurrentStages = allowedCurrentStagesByRequestedStage[stage];
+
+  if (!allowedCurrentStages.includes(session.current_stage)) {
+    const next = getNextActionByCurrentStage(session.current_stage);
+
+    return blockResponse({
+      error: "INVALID_STAGE",
+      message: `Current stage is ${session.current_stage}. You cannot load ${stage} rules at this stage. You must call ${next.mustCallNext} first.`,
+      nextAction: next.nextAction,
+      mustCallNext: next.mustCallNext,
+      requiredStage: next.requiredStage,
+    });
+  }
+
+  return null;
+}
+
 async function guardPropertyConfirmed(sessionId: string, targetStage: Stage) {
   const { data: propertyData, error } = await getPropertyData(sessionId);
 
@@ -566,6 +716,15 @@ export async function POST(request: Request) {
         },
         { status: 400 }
       );
+    }
+
+    const stageLockResponse = await guardRequestedStageMatchesCurrentStage(
+      stage,
+      sessionId
+    );
+
+    if (stageLockResponse) {
+      return stageLockResponse;
     }
 
     const guardResponse = await guardStage(stage, sessionId);
