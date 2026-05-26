@@ -7,8 +7,19 @@ type MaterialStatusBody = {
     hasBusinessCard?: boolean;
     hasPortrait?: boolean;
     hasQrcode?: boolean;
+    hasOtherMaterials?: boolean;
   };
 };
+
+function jsonResponse(data: unknown, init?: ResponseInit) {
+  return new Response(JSON.stringify(data), {
+    ...init,
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      ...(init?.headers || {}),
+    },
+  });
+}
 
 export async function POST(request: Request) {
   try {
@@ -18,7 +29,7 @@ export async function POST(request: Request) {
     const materials = body.materials;
 
     if (!sessionId) {
-      return Response.json(
+      return jsonResponse(
         {
           ok: false,
           error: "MISSING_SESSION_ID",
@@ -29,7 +40,7 @@ export async function POST(request: Request) {
     }
 
     if (!materials) {
-      return Response.json(
+      return jsonResponse(
         {
           ok: false,
           error: "MISSING_MATERIALS",
@@ -46,13 +57,36 @@ export async function POST(request: Request) {
       .single();
 
     if (sessionError || !session) {
-      return Response.json(
+      return jsonResponse(
         {
           ok: false,
           error: "SESSION_NOT_FOUND",
           message: "查無此 session。",
         },
         { status: 404 }
+      );
+    }
+
+    /**
+     * 流程鎖：
+     * 此 API 只能在 MATERIAL_STATUS 階段執行。
+     * 避免 GPTs 跳步或重複錯推階段。
+     */
+    if (session.current_stage !== "MATERIAL_STATUS") {
+      return jsonResponse(
+        {
+          ok: false,
+          success: false,
+          blocked: true,
+          error: "STAGE_MISMATCH",
+          message: `目前 session 階段為 ${session.current_stage}，不能執行 updateMaterialStatus。`,
+          sessionId,
+          currentStage: session.current_stage,
+          requiredStage: "MATERIAL_STATUS",
+          nextAction: "getSessionStatus",
+          mustCallNext: "getSessionStatus",
+        },
+        { status: 409 }
       );
     }
 
@@ -66,6 +100,7 @@ export async function POST(request: Request) {
       has_business_card: materials.hasBusinessCard === true,
       has_portrait: materials.hasPortrait === true,
       has_qrcode: materials.hasQrcode === true,
+      has_other_materials: materials.hasOtherMaterials === true,
     };
 
     const { data: existingStatus } = await supabaseAdmin
@@ -99,7 +134,7 @@ export async function POST(request: Request) {
     }
 
     if (saveError || !savedStatus) {
-      return Response.json(
+      return jsonResponse(
         {
           ok: false,
           error: "MATERIAL_STATUS_SAVE_FAILED",
@@ -110,7 +145,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const nextStage = "DATA_EXTRACTION";
+    const nextStage = "PROPERTY_CONFIRMATION";
 
     const { error: updateSessionError } = await supabaseAdmin
       .from("sessions")
@@ -120,7 +155,7 @@ export async function POST(request: Request) {
       .eq("id", sessionId);
 
     if (updateSessionError) {
-      return Response.json(
+      return jsonResponse(
         {
           ok: false,
           error: "SESSION_STAGE_UPDATE_FAILED",
@@ -139,7 +174,7 @@ export async function POST(request: Request) {
     });
 
     if (logError) {
-      return Response.json(
+      return jsonResponse(
         {
           ok: false,
           error: "SESSION_LOG_CREATE_FAILED",
@@ -150,8 +185,9 @@ export async function POST(request: Request) {
       );
     }
 
-    return Response.json({
+    return jsonResponse({
       ok: true,
+      success: true,
       session: {
         id: sessionId,
         currentStage: nextStage,
@@ -163,12 +199,19 @@ export async function POST(request: Request) {
         hasBusinessCard: savedStatus.has_business_card,
         hasPortrait: savedStatus.has_portrait,
         hasQrcode: savedStatus.has_qrcode,
+        hasOtherMaterials: savedStatus.has_other_materials,
       },
+      currentStage: nextStage,
       nextStage,
-      message: "素材狀態已記錄。系統僅儲存文字狀態，不儲存圖片、PDF、QR Code 或人物照。",
+      nextAction: "loadStageRules",
+      mustCallNext: "loadStageRules",
+      nextInstruction:
+        "素材狀態已記錄。下一步必須呼叫 loadStageRules，stage = property_confirmation。",
+      message:
+        "素材狀態已記錄。系統僅儲存文字狀態，不儲存圖片、PDF、QR Code 或人物照。",
     });
   } catch (error) {
-    return Response.json(
+    return jsonResponse(
       {
         ok: false,
         error: "INTERNAL_SERVER_ERROR",
