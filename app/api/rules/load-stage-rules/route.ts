@@ -270,7 +270,8 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const rule = await fetchStageRule(ruleConfig.fileName);
+    // 只檢查 GitHub markdown 是否存在與可讀，不把完整規則全文回傳給 GPTs Action。
+    await fetchStageRule(ruleConfig.fileName);
 
     return jsonResponse({
       ok: true,
@@ -286,7 +287,6 @@ export async function POST(req: NextRequest) {
       mustCallNext: ruleConfig.mustCallNext,
       nextInstruction: ruleConfig.nextInstruction,
       message: "Stage rule loaded successfully.",
-      rule,
     });
   } catch (error) {
     const message =
