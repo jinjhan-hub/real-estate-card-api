@@ -1,4 +1,4 @@
-openapi: 3.1.0
+openapi: 3.0.3
 info:
   title: Real Estate Card API Lite
   version: 1.0.0
@@ -32,15 +32,102 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/VerifyStoreSuccess"
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
+                  success:
+                    type: boolean
+                    example: true
+                  store:
+                    type: object
+                    properties:
+                      storeId:
+                        type: string
+                      storeName:
+                        type: string
+                      brokerageName:
+                        type: string
+                      brokerName:
+                        type: string
+                      brokerLicenseNo:
+                        type: string
+                      features:
+                        type: array
+                        items:
+                          type: string
+                      expiresAt:
+                        type: string
+                  disclosure:
+                    type: object
+                    properties:
+                      brokerageName:
+                        type: string
+                      brokerName:
+                        type: string
+                      brokerLicenseNo:
+                        type: string
         "400":
           description: Missing required input.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  success:
+                    type: boolean
+                  error:
+                    type: string
+                  message:
+                    type: string
         "401":
           description: Invalid access code.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  success:
+                    type: boolean
+                  error:
+                    type: string
+                  message:
+                    type: string
         "403":
           description: Store is inactive, expired, not started, not allowed, or disclosure is incomplete.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  success:
+                    type: boolean
+                  error:
+                    type: string
+                  message:
+                    type: string
         "404":
           description: Store not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  success:
+                    type: boolean
+                  error:
+                    type: string
+                  message:
+                    type: string
   /api/rules/get-stage:
     post:
       operationId: getStageRules
@@ -70,80 +157,51 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/GetStageRulesSuccess"
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
+                  success:
+                    type: boolean
+                    example: true
+                  stage:
+                    type: string
+                  content:
+                    type: string
+                  source:
+                    type: string
+                    example: github
+                  version:
+                    type: string
+                    example: lite-v1
         "400":
           description: Missing or invalid stage.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  success:
+                    type: boolean
+                  error:
+                    type: string
+                  message:
+                    type: string
         "500":
           description: Stage rule load failed.
-components:
-  schemas:
-    VerifyStoreSuccess:
-      type: object
-      required:
-        - ok
-        - success
-        - store
-        - disclosure
-      properties:
-        ok:
-          type: boolean
-          const: true
-        success:
-          type: boolean
-          const: true
-        store:
-          type: object
-          properties:
-            storeId:
-              type: string
-            storeName:
-              type:
-                - string
-                - "null"
-            brokerageName:
-              type: string
-            brokerName:
-              type: string
-            brokerLicenseNo:
-              type: string
-            features:
-              type: array
-              items:
-                type: string
-            expiresAt:
-              type: string
-        disclosure:
-          type: object
-          properties:
-            brokerageName:
-              type: string
-            brokerName:
-              type: string
-            brokerLicenseNo:
-              type: string
-    GetStageRulesSuccess:
-      type: object
-      required:
-        - ok
-        - success
-        - stage
-        - content
-        - source
-        - version
-      properties:
-        ok:
-          type: boolean
-          const: true
-        success:
-          type: boolean
-          const: true
-        stage:
-          type: string
-        content:
-          type: string
-        source:
-          type: string
-          const: github
-        version:
-          type: string
-          const: lite-v1
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  success:
+                    type: boolean
+                  error:
+                    type: string
+                  message:
+                    type: string
