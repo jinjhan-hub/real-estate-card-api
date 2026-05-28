@@ -1,0 +1,149 @@
+openapi: 3.1.0
+info:
+  title: Real Estate Card API Lite
+  version: 1.0.0
+  description: Lite API for Taiwan real estate FB 4:5 sales card GPTs.
+servers:
+  - url: https://real-estate-card-api.vercel.app
+paths:
+  /api/store/verify:
+    post:
+      operationId: verifyStore
+      summary: Verify store access for Lite sales card GPTs.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - storeId
+                - accessCode
+              properties:
+                storeId:
+                  type: string
+                  example: CH006
+                accessCode:
+                  type: string
+                  example: CH-2026-KM09
+      responses:
+        "200":
+          description: Store verified.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifyStoreSuccess"
+        "400":
+          description: Missing required input.
+        "401":
+          description: Invalid access code.
+        "403":
+          description: Store is inactive, expired, not started, not allowed, or disclosure is incomplete.
+        "404":
+          description: Store not found.
+  /api/rules/get-stage:
+    post:
+      operationId: getStageRules
+      summary: Load a Lite stage rule from GitHub markdown.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - stage
+              properties:
+                stage:
+                  type: string
+                  enum:
+                    - material_check
+                    - property_extract
+                    - compliance_check
+                    - style_selection
+                    - image_prompt
+                    - final_generation_brief
+                    - manual_review
+      responses:
+        "200":
+          description: Stage rule loaded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetStageRulesSuccess"
+        "400":
+          description: Missing or invalid stage.
+        "500":
+          description: Stage rule load failed.
+components:
+  schemas:
+    VerifyStoreSuccess:
+      type: object
+      required:
+        - ok
+        - success
+        - store
+        - disclosure
+      properties:
+        ok:
+          type: boolean
+          const: true
+        success:
+          type: boolean
+          const: true
+        store:
+          type: object
+          properties:
+            storeId:
+              type: string
+            storeName:
+              type:
+                - string
+                - "null"
+            brokerageName:
+              type: string
+            brokerName:
+              type: string
+            brokerLicenseNo:
+              type: string
+            features:
+              type: array
+              items:
+                type: string
+            expiresAt:
+              type: string
+        disclosure:
+          type: object
+          properties:
+            brokerageName:
+              type: string
+            brokerName:
+              type: string
+            brokerLicenseNo:
+              type: string
+    GetStageRulesSuccess:
+      type: object
+      required:
+        - ok
+        - success
+        - stage
+        - content
+        - source
+        - version
+      properties:
+        ok:
+          type: boolean
+          const: true
+        success:
+          type: boolean
+          const: true
+        stage:
+          type: string
+        content:
+          type: string
+        source:
+          type: string
+          const: github
+        version:
+          type: string
+          const: lite-v1
